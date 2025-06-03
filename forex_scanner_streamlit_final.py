@@ -18,7 +18,8 @@ if not API_KEY:
     st.error("Clé API manquante. Ajoutez-la dans .streamlit/secrets.toml : TWELVE_DATA_API_KEY = '...' ")
     st.stop()
 
-FOREX_PAIRS_TD = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD", "EUR/JPY", "GBP/JPY", "EUR/GBP", "XAU/USD", "US30", "NAS100", "SPX"]
+FOREX_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD", "EUR/JPY", "GBP/JPY", "EUR/GBP"]
+OTHER_ASSETS = ["XAU/USD", "DJI", "NDX", "SPX"]
 INTERVAL = "1h"
 OUTPUT_SIZE = 250
 
@@ -59,7 +60,7 @@ def heiken_ashi(df):
     return ha_open, ha_close
 
 def smoothed_heiken_ashi(df, l1=10, l2=10):
-    eo, eh, el, ec = ema(df['Open'], l1), ema(df['High'], l1), ema(df['Low'], l1), ema(df['Close'], l1)
+    eo, eh, el, ec = ema(df['Open'], l1), ema(df['High l1), ema(df['Low'], l1), ema(df['Close'], l1)
     hao, hac = heiken_ashi(pd.DataFrame({'Open': eo, 'High': eh, 'Low': el, 'Close': ec}))
     return ema(hao, l2), ema(hac, l2)
 
@@ -92,9 +93,10 @@ def get_data(symbol):
             "apikey": API_KEY,
             "timezone": "UTC"
         })
+        r.raise_for_status()  # Lève une exception pour les erreurs HTTP
         j = r.json()
         if "values" not in j:
-            st.warning(f"Données non disponibles pour {symbol}. Vérifiez le symbole ou votre plan API.")
+            st.warning(f"Données non disponibles pour {symbol}. Vérifiez le symbole ou votre plan API: {j}")
             return None
         df = pd.DataFrame(j["values"])
         df['datetime'] = pd.to_datetime(df['datetime'])
@@ -103,6 +105,13 @@ def get_data(symbol):
         df = df.astype(float)
         df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close"}, inplace=True)
         return df[['Open','High','Low','Close']]
+    except requests.exceptions.HTTPError as e:
+        if r.status_code == 429:
+            st.warning(f"Limite de requêtes dépassée pour {symbol}. Attente avant réessai...")
+            time.sleep(60)
+            return get_data(symbol)
+        st.error(f"Erreur HTTP pour {symbol}: {str(e)}")
+        return None
     except Exception as e:
         st.error(f"Erreur pour {symbol}: {str(e)}")
         return None
@@ -161,32 +170,47 @@ def calculate_signals(df):
 st.sidebar.header("Paramètres")
 min_conf = st.sidebar.slider("Confluence minimale", 0, 6, 3)
 show_all = st.sidebar.checkbox("Afficher toutes les paires", value=False)
-if st.sidebar.button("Lancer le scan"):
-    results = []
-    for i, symbol in enumerate(FOREX_PAIRS_TD):
-        st.sidebar.write(f"{symbol} ({i+1}/{len(FOREX_PAIRS_TD)})")
-        df = get_data(symbol)
-        time.sleep(1.0)
-        res = calculate_signals(df)
-        if res:
-            if show_all or res['confluence'] >= min_conf:
-                color = 'green' if res['direction'] == 'HAUSSIER' else 'red' if res['direction'] == 'BAISSIER' else 'gray'
-                row = {
-                    "Paire": symbol.replace("/", ""),
-                    "Confluences": res['stars'],
-                    "Direction": f"<span style='color:{color}'>{res['direction']}</span>",
-                }
-                row.update(res['signals'])
-                results.append(row)
 
-    if results:
-        df_res = pd.DataFrame(results).sort_values(by="Confluences", ascending=False)
-        st.markdown(
-            df_res.to_html(escape=False, index=False), unsafe_allow_html=True
-        )
-        st.download_button("📂 Exporter CSV", data=df_res.to_csv(index=False).encode('utf-8'), file_name="confluences.csv", mime="text/csv")
+if st.sidebar.button("Lancer le scan"):
+    # Fonction pour scanner un groupe d'actifs
+    def scan_assets(asset_list, group_name):
+        results = []
+        for i, symbol in enumerate(asset_list):
+            st.sidebar.write(f"{symbol} ({i+1}/{len(asset_list)}) - {group_name}")
+            df = get_data(symbol)
+            time.sleep(2.0)  # Augmenter le délai pour éviter les limites API
+            res = calculate_signals(df)
+            if res:
+                if show_all or res['confluence'] >= min_conf:
+                    color = 'green' if res['direction'] == 'HAUSSIER' else 'red' if res['direction'] == 'BAISSIER' else 'gray'
+                    row = {
+                        "Paire": symbol.replace("/", ""),
+                        "Confluences": res['stars'],
+                        "Direction": f"<span style='color:{color}'>{res['direction']}</span>",
+                    }
+                    row.update(res['signals'])
+                    results.append(row)
+        return results
+
+    # Scanner les paires forex
+    st.subheader("Résultats des Paires Forex")
+    forex_results = scan_assets(FOREX_PAIRS, "Paires Forex")
+    if forex_results:
+        df_forex = pd.DataFrame(forex_results).sort_values(by="Confluences", ascending=False)
+        st.markdown(df_forex.to_html(escape=False, index=False), unsafe_allow_html=True)
+        st.download_button("📂 Exporter CSV (Forex)", data=df_forex.to_csv(index=False).encode('utf-8'), file_name="confluences_forex.csv", mime="text/csv")
     else:
-        st.warning("Aucun résultat correspondant aux critères.")
+        st.warning("Aucun résultat correspondant aux critères pour les paires forex.")
+
+    # Scanner les autres actifs
+    st.subheader("Résultats des Autres Actifs (Or, Indices)")
+    other_results = scan_assets(OTHER_ASSETS, "Autres Actifs")
+    if other_results:
+        df_other = pd.DataFrame(other_results).sort_values(by="Confluences", ascending=False)
+        st.markdown(df_other.to_html(escape=False, index=False), unsafe_allow_html=True)
+        st.download_button("📂 Exporter CSV (Autres Actifs)", data=df_other.to_csv(index=False).encode('utf-8'), file_name="confluences_other.csv", mime="text/csv")
+    else:
+        st.warning("Aucun résultat correspondant aux critères pour les autres actifs.")
 
 st.caption(f"Dernière mise à jour : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
