@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
 import time
-import traceback
 import requests
 
 # --- CONFIG STREAMLIT ---
@@ -19,7 +18,13 @@ if not API_KEY:
     st.stop()
 
 FOREX_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD", "EUR/JPY", "GBP/JPY", "EUR/GBP"]
-OTHER_ASSETS = ["XAU/USD", "DJI", "NDX", "SPX"]
+# Dictionnaire pour tester plusieurs symboles par actif
+OTHER_ASSETS = {
+    "Gold": ["XAU/USD", "XAUUSD", "GOLD"],
+    "Dow Jones": ["DJI", "US30", "DJIA"],
+    "Nasdaq 100": ["NDX", "NAS100", "NDX100"],
+    "S&P 500": ["SPX", "SPX500", "GSPC"]
+}
 INTERVAL = "1h"
 OUTPUT_SIZE = 250
 
@@ -60,7 +65,7 @@ def heiken_ashi(df):
     return ha_open, ha_close
 
 def smoothed_heiken_ashi(df, l1=10, l2=10):
-    eo, eh, el, ec = ema(df['Open'], l1), ema(df['High l1), ema(df['Low'], l1), ema(df['Close'], l1)
+    eo, eh, el, ec = ema(df['Open'], l1), ema(df['High'], l1), ema(df['Low'], l1), ema(df['Close'], l1)
     hao, hac = heiken_ashi(pd.DataFrame({'Open': eo, 'High': eh, 'Low': el, 'Close': ec}))
     return ema(hao, l2), ema(hac, l2)
 
@@ -96,25 +101,22 @@ def get_data(symbol):
         r.raise_for_status()  # Lève une exception pour les erreurs HTTP
         j = r.json()
         if "values" not in j:
-            st.warning(f"Données non disponibles pour {symbol}. Vérifiez le symbole ou votre plan API: {j}")
-            return None
+            return None, f"Données non disponibles pour {symbol}. Détails: {j.get('message', 'Aucune donnée retournée')}"
         df = pd.DataFrame(j["values"])
         df['datetime'] = pd.to_datetime(df['datetime'])
         df.set_index('datetime', inplace=True)
         df = df.sort_index()
         df = df.astype(float)
         df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close"}, inplace=True)
-        return df[['Open','High','Low','Close']]
+        return df[['Open','High','Low','Close']], None
     except requests.exceptions.HTTPError as e:
         if r.status_code == 429:
             st.warning(f"Limite de requêtes dépassée pour {symbol}. Attente avant réessai...")
             time.sleep(60)
             return get_data(symbol)
-        st.error(f"Erreur HTTP pour {symbol}: {str(e)}")
-        return None
+        return None, f"Erreur HTTP pour {symbol}: {str(e)}"
     except Exception as e:
-        st.error(f"Erreur pour {symbol}: {str(e)}")
-        return None
+        return None, f"Erreur pour {symbol}: {str(e)}"
 
 # --- STARS ---
 def confluence_stars(val):
@@ -177,8 +179,11 @@ if st.sidebar.button("Lancer le scan"):
         results = []
         for i, symbol in enumerate(asset_list):
             st.sidebar.write(f"{symbol} ({i+1}/{len(asset_list)}) - {group_name}")
-            df = get_data(symbol)
-            time.sleep(2.0)  # Augmenter le délai pour éviter les limites API
+            df, error = get_data(symbol)
+            time.sleep(2.0)  # Délai pour éviter les limites API
+            if error:
+                st.warning(error)
+                continue
             res = calculate_signals(df)
             if res:
                 if show_all or res['confluence'] >= min_conf:
@@ -202,15 +207,34 @@ if st.sidebar.button("Lancer le scan"):
     else:
         st.warning("Aucun résultat correspondant aux critères pour les paires forex.")
 
-    # Scanner les autres actifs
-    st.subheader("Résultats des Autres Actifs (Or, Indices)")
-    other_results = scan_assets(OTHER_ASSETS, "Autres Actifs")
-    if other_results:
-        df_other = pd.DataFrame(other_results).sort_values(by="Confluences", ascending=False)
-        st.markdown(df_other.to_html(escape=False, index=False), unsafe_allow_html=True)
-        st.download_button("📂 Exporter CSV (Autres Actifs)", data=df_other.to_csv(index=False).encode('utf-8'), file_name="confluences_other.csv", mime="text/csv")
-    else:
-        st.warning("Aucun résultat correspondant aux critères pour les autres actifs.")
+    # Test des symboles pour chaque actif dans OTHER_ASSETS
+    st.subheader("Test des Symboles pour les Autres Actifs")
+    for asset_name, symbols in OTHER_ASSETS.items():
+        st.write(f"**Test pour {asset_name}**")
+        found_working_symbol = False
+        for symbol in symbols:
+            st.write(f"Tentative avec le symbole : {symbol}")
+            df, error = get_data(symbol)
+            time.sleep(2.0)  # Délai pour éviter les limites API
+            if error:
+                st.warning(error)
+                continue
+            found_working_symbol = True
+            res = calculate_signals(df)
+            if res:
+                color = 'green' if res['direction'] == 'HAUSSIER' else 'red' if res['direction'] == 'BAISSIER' else 'gray'
+                row = {
+                    "Paire": symbol.replace("/", ""),
+                    "Confluences": res['stars'],
+                    "Direction": f"<span style='color:{color}'>{res['direction']}</span>",
+                }
+                row.update(res['signals'])
+                df_test = pd.DataFrame([row])
+                st.markdown(df_test.to_html(escape=False, index=False), unsafe_allow_html=True)
+            else:
+                st.warning(f"Aucun signal calculé pour {symbol}. Les données sont insuffisantes ou non valides.")
+            break  # Arrêter après avoir trouvé un symbole qui fonctionne
+        if not found_working_symbol:
+            st.error(f"Aucun symbole fonctionnel trouvé pour {asset_name}. Vérifie ton plan API ou les symboles disponibles.")
 
 st.caption(f"Dernière mise à jour : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-        
