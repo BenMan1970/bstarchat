@@ -5,6 +5,12 @@ import time
 from datetime import datetime, timezone
 import requests
 
+# --- CONFIG API TWELVE DATA ---
+TWELVE_DATA_API_URL = "https://api.twelvedata.com/time_series"
+API_KEY = "colle-ta-clé-API-ici"  # 🔑 À remplacer
+INTERVAL = "1h"
+OUTPUT_SIZE = 100
+
 # --- FETCH DATA ---
 @st.cache_data(ttl=900)
 def get_data(symbol):
@@ -26,7 +32,8 @@ def get_data(symbol):
         df = df.astype(float)
         df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close"}, inplace=True)
         return df[['Open','High','Low','Close']]
-    except Exception:
+    except Exception as e:
+        st.error(f"Erreur lors de la récupération des données pour {symbol} : {e}")
         return None
 
 # --- PAIRS ---
