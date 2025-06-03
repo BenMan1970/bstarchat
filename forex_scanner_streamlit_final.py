@@ -48,8 +48,7 @@ def get_data(symbol):
 # --- PAIRS ---
 FOREX_PAIRS_TD = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
-    "EUR/JPY", "GBP/JPY", "EUR/GBP",
-    "XAU/USD", "US30", "NAS100", "SPX500"
+    "EUR/JPY", "GBP/JPY", "EUR/GBP"
 ]
 
 # --- INDICATEURS ---
@@ -119,7 +118,7 @@ def rsi(src, p):
     return 100 - 100 / (1 + rs)
 
 def adx(h, l, c, p):
-    tr = pd.concat([h-l, abs(h-c.shift()), abs(l-c.shift())], axis=1).max elect axis=1)
+    tr = pd.concat([h-l, abs(h-c.shift()), abs(l-c.shift())], axis=1).max(axis=1)
     atr = rma(tr, p)
     up = h.diff(); down = l.shift() - l
     plus = np.where((up > down) & (up > 0), up, 0.0)
