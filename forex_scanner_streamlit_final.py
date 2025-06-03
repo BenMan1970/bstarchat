@@ -61,7 +61,7 @@ def heiken_ashi(df):
     ha_open = pd.Series(index=ha_close.index, dtype=float)
     ha_open.iloc[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
     for i in range(1, len(ha_open)):
-        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
+        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close[i-1]) / 2
     return ha_open, ha_close
 
 def smoothed_heiken_ashi(df, l1=10, l2=10):
@@ -91,6 +91,7 @@ def ichimoku_signal(h, l, c, tenkan=9, kijun=26, senkou_b=52):
 @st.cache_data(ttl=900)
 def get_data(symbol):
     try:
+        st.write(f"Tentative de récupération des données pour {symbol}...")
         r = requests.get(TWELVE_DATA_API_URL, params={
             "symbol": symbol,
             "interval": INTERVAL,
@@ -101,6 +102,7 @@ def get_data(symbol):
         r.raise_for_status()  # Lève une exception pour les erreurs HTTP
         j = r.json()
         if "values" not in j:
+            st.write(f"Détails de l'erreur pour {symbol}: {j}")
             return None, f"Données non disponibles pour {symbol}. Détails: {j.get('message', 'Aucune donnée retournée')}"
         df = pd.DataFrame(j["values"])
         df['datetime'] = pd.to_datetime(df['datetime'])
@@ -108,14 +110,17 @@ def get_data(symbol):
         df = df.sort_index()
         df = df.astype(float)
         df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close"}, inplace=True)
+        st.write(f"Données récupérées avec succès pour {symbol} avec {len(df)} lignes.")
         return df[['Open','High','Low','Close']], None
     except requests.exceptions.HTTPError as e:
         if r.status_code == 429:
             st.warning(f"Limite de requêtes dépassée pour {symbol}. Attente avant réessai...")
             time.sleep(60)
             return get_data(symbol)
+        st.write(f"Résponse HTTP pour {symbol}: {r.text}")
         return None, f"Erreur HTTP pour {symbol}: {str(e)}"
     except Exception as e:
+        st.write(f"Exception inattendue pour {symbol}: {str(e)}")
         return None, f"Erreur pour {symbol}: {str(e)}"
 
 # --- STARS ---
