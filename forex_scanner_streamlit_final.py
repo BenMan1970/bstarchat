@@ -17,8 +17,8 @@ if not API_KEY:
     st.error("Clé API manquante. Ajoutez-la dans .streamlit/secrets.toml : TWELVE_DATA_API_KEY = '...' ")
     st.stop()
 
-FOREX_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD", "EUR/JPY", "GBP/JPY", "EUR/GBP"]
-# Dictionnaire pour tester plusieurs symboles par actif
+# Ajout de XAUUSD aux paires forex
+FOREX_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD", "EUR/JPY", "GBP/JPY", "XAUUSD"]
 OTHER_ASSETS = {
     "Gold": ["XAU/USD", "XAUUSD", "GOLD"],
     "Dow Jones": ["DJI", "US30", "DJIA"],
@@ -197,7 +197,7 @@ if st.sidebar.button("Lancer le scan"):
                     results.append(row)
         return results
 
-    # Scanner les paires forex
+    # Scanner les paires forex (incluant XAUUSD)
     st.subheader("Résultats des Paires Forex")
     forex_results = scan_assets(FOREX_PAIRS, "Paires Forex")
     if forex_results:
@@ -207,7 +207,7 @@ if st.sidebar.button("Lancer le scan"):
     else:
         st.warning("Aucun résultat correspondant aux critères pour les paires forex.")
 
-    # Test des symboles pour chaque actif dans OTHER_ASSETS
+    # Section pour tester les autres actifs (facultative)
     st.subheader("Test des Symboles pour les Autres Actifs")
     for asset_name, symbols in OTHER_ASSETS.items():
         st.write(f"**Test pour {asset_name}**")
