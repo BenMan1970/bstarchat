@@ -11,7 +11,7 @@ st.set_page_config(page_title="Forex Scanner", page_icon="📈", layout="wide")
 # --- CONFIG API TWELVE DATA ---
 TWELVE_DATA_API_URL = "https://api.twelvedata.com/time_series"
 INTERVAL = "1h"
-OUTPUT_SIZE = 100
+OUTPUT_SIZE = 50  # Réduit pour éviter les limites API
 
 # --- INTERFACE POUR CLE API ---
 st.sidebar.header("🔑 Configuration API")
@@ -23,233 +23,196 @@ if not API_KEY:
     st.stop()
 
 # --- FETCH DATA ---
-@st.cache_data(ttl=900)
 def get_data(symbol, api_key):
+    """Récupère les données avec diagnostic détaillé"""
     try:
-        r = requests.get(TWELVE_DATA_API_URL, params={
+        params = {
             "symbol": symbol,
             "interval": INTERVAL,
             "outputsize": OUTPUT_SIZE,
             "apikey": api_key,
             "timezone": "UTC"
-        }, timeout=10)
+        }
+        
+        st.write(f"🔍 Requête pour {symbol}...")
+        r = requests.get(TWELVE_DATA_API_URL, params=params, timeout=15)
+        
+        st.write(f"📡 Status: {r.status_code}")
         
         if r.status_code != 200:
-            st.error(f"Erreur HTTP {r.status_code} pour {symbol}")
+            st.error(f"❌ Erreur HTTP {r.status_code} pour {symbol}")
             return None
             
         j = r.json()
+        st.write(f"📋 Réponse API: {list(j.keys())}")
         
-        # Vérification des erreurs API
-        if "code" in j and j["code"] != 200:
-            st.error(f"Erreur API pour {symbol}: {j.get('message', 'Erreur inconnue')}")
+        # Diagnostics détaillés
+        if "status" in j and j["status"] == "error":
+            st.error(f"❌ Erreur API pour {symbol}: {j.get('message', 'Erreur inconnue')}")
             return None
             
-        if "values" not in j or not j["values"]:
-            st.warning(f"Aucune donnée disponible pour {symbol}")
+        if "code" in j and j["code"] != 200:
+            st.error(f"❌ Code erreur {j['code']} pour {symbol}: {j.get('message', 'Erreur inconnue')}")
+            return None
+            
+        if "values" not in j:
+            st.warning(f"⚠️ Pas de données 'values' pour {symbol}. Clés disponibles: {list(j.keys())}")
+            if "note" in j:
+                st.info(f"ℹ️ Note API: {j['note']}")
+            return None
+            
+        if not j["values"] or len(j["values"]) == 0:
+            st.warning(f"⚠️ Données vides pour {symbol}")
             return None
             
         df = pd.DataFrame(j["values"])
+        st.write(f"📊 Données reçues: {len(df)} lignes, colonnes: {list(df.columns)}")
+        
+        # Vérification des colonnes essentielles
+        required_cols = ['datetime', 'open', 'high', 'low', 'close']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            st.error(f"❌ Colonnes manquantes pour {symbol}: {missing_cols}")
+            return None
+        
         df['datetime'] = pd.to_datetime(df['datetime'])
         df.set_index('datetime', inplace=True)
         df = df.sort_index()
         
-        # Conversion en float avec gestion d'erreurs
+        # Conversion en float avec diagnostic
         for col in ['open', 'high', 'low', 'close']:
+            original_type = df[col].dtype
             df[col] = pd.to_numeric(df[col], errors='coerce')
+            null_count = df[col].isnull().sum()
+            if null_count > 0:
+                st.warning(f"⚠️ {null_count} valeurs nulles dans {col} pour {symbol}")
             
         df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close"}, inplace=True)
         
-        # Vérification des données valides
-        if df[['Open','High','Low','Close']].isnull().all().all():
-            st.warning(f"Données invalides pour {symbol}")
+        # Vérification finale
+        clean_df = df[['Open','High','Low','Close']].dropna()
+        st.write(f"✅ Données nettoyées: {len(clean_df)} lignes valides")
+        
+        if len(clean_df) < 30:
+            st.warning(f"⚠️ Pas assez de données pour {symbol} ({len(clean_df)} lignes)")
             return None
             
-        return df[['Open','High','Low','Close']].dropna()
+        return clean_df
         
     except requests.exceptions.Timeout:
-        st.error(f"Timeout lors de la récupération des données pour {symbol}")
+        st.error(f"⏱️ Timeout pour {symbol}")
         return None
     except requests.exceptions.RequestException as e:
-        st.error(f"Erreur de connexion pour {symbol}: {e}")
+        st.error(f"🌐 Erreur réseau pour {symbol}: {e}")
         return None
     except Exception as e:
-        st.error(f"Erreur lors de la récupération des données pour {symbol}: {e}")
+        st.error(f"💥 Erreur inattendue pour {symbol}: {e}")
         return None
 
-# --- PAIRS ---
+# --- PAIRS SIMPLIFIEES POUR TEST ---
 FOREX_PAIRS_TD = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
-    "EUR/JPY", "GBP/JPY", "EUR/GBP",
-    "XAU/USD", "US30/USD", "NAS100/USD", "SPX/USD"
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD"
 ]
 
-# --- INDICATEURS ---
-def ema(s, p): 
-    return s.ewm(span=p, adjust=False).mean()
-
-def rma(s, p): 
-    return s.ewm(alpha=1/p, adjust=False).mean()
-
-def rsi(src, p):
-    try:
-        d = src.diff()
-        g = d.where(d > 0, 0.0)
-        l = -d.where(d < 0, 0.0)
-        rs = rma(g, p) / rma(l, p).replace(0, 1e-9)
-        return 100 - 100 / (1 + rs)
-    except:
-        return pd.Series([50] * len(src), index=src.index)
-
-def adx(h, l, c, p):
-    try:
-        tr = pd.concat([h-l, abs(h-c.shift()), abs(l-c.shift())], axis=1).max(axis=1)
-        atr = rma(tr, p)
-        up = h.diff()
-        down = l.shift() - l
-        plus = np.where((up > down) & (up > 0), up, 0.0)
-        minus = np.where((down > up) & (down > 0), down, 0.0)
-        pdi = 100 * rma(pd.Series(plus, index=h.index), p) / atr.replace(0, 1e-9)
-        mdi = 100 * rma(pd.Series(minus, index=h.index), p) / atr.replace(0, 1e-9)
-        dx = 100 * abs(pdi - mdi) / (pdi + mdi).replace(0, 1e-9)
-        return rma(dx, p)
-    except:
-        return pd.Series([20] * len(h), index=h.index)
-
-# --- SIGNALS ---
-def confluence_stars(val):
-    stars_map = {6: "⭐⭐⭐⭐⭐⭐", 5: "⭐⭐⭐⭐⭐", 4: "⭐⭐⭐⭐", 
-                 3: "⭐⭐⭐", 2: "⭐⭐", 1: "⭐"}
-    return stars_map.get(val, "WAIT")
-
-def calculate_signals(df):
-    if df is None or len(df) < 60:
+# --- INDICATEURS SIMPLIFIES ---
+def calculate_simple_signals(df):
+    """Version simplifiée des signaux pour debug"""
+    if df is None or len(df) < 20:
         return None
         
     try:
-        ohlc4 = df[['Open','High','Low','Close']].mean(axis=1)
         signals = {}
         bull = bear = 0
-
-        # HMA approximation
-        hma = df['Close'].rolling(9).mean()
-        if len(hma) >= 2 and not pd.isna(hma.iloc[-1]) and not pd.isna(hma.iloc[-2]):
-            if hma.iloc[-1] > hma.iloc[-2]: 
+        
+        # 1. Simple Moving Average
+        sma_short = df['Close'].rolling(5).mean()
+        sma_long = df['Close'].rolling(10).mean()
+        
+        if len(sma_short) >= 2 and len(sma_long) >= 2:
+            if sma_short.iloc[-1] > sma_long.iloc[-1]:
                 bull += 1
-                signals['HMA'] = "▲"
-            elif hma.iloc[-1] < hma.iloc[-2]: 
-                bear += 1
-                signals['HMA'] = "▼"
+                signals['SMA'] = "▲"
             else:
-                signals['HMA'] = "—"
+                bear += 1
+                signals['SMA'] = "▼"
         else:
-            signals['HMA'] = "—"
-
-        # RSI
-        rsi_series = rsi(ohlc4, 10)
-        if len(rsi_series) > 0 and not pd.isna(rsi_series.iloc[-1]):
-            rsi_val = rsi_series.iloc[-1]
-            signals['RSI'] = f"{int(rsi_val)}"
-            if rsi_val > 50: 
+            signals['SMA'] = "—"
+        
+        # 2. Price vs Moving Average
+        sma_20 = df['Close'].rolling(20).mean()
+        current_price = df['Close'].iloc[-1]
+        
+        if not pd.isna(sma_20.iloc[-1]):
+            if current_price > sma_20.iloc[-1]:
                 bull += 1
-            elif rsi_val < 50: 
+                signals['Price_vs_MA'] = "▲"
+            else:
                 bear += 1
+                signals['Price_vs_MA'] = "▼"
         else:
-            signals['RSI'] = "50"
-
-        # ADX
-        adx_series = adx(df['High'], df['Low'], df['Close'], 14)
-        if len(adx_series) > 0 and not pd.isna(adx_series.iloc[-1]):
-            adx_val = adx_series.iloc[-1]
-            signals['ADX'] = f"{int(adx_val)}"
-            if adx_val >= 20: 
+            signals['Price_vs_MA'] = "—"
+        
+        # 3. Volume (si disponible) ou momentum simple
+        if len(df) >= 3:
+            momentum = df['Close'].iloc[-1] - df['Close'].iloc[-3]
+            if momentum > 0:
                 bull += 1
+                signals['Momentum'] = "▲"
+            else:
                 bear += 1
+                signals['Momentum'] = "▼"
         else:
-            signals['ADX'] = "20"
-
-        # Heikin Ashi
-        try:
-            ha_open = (df['Open'].shift(1) + df['Close'].shift(1)) / 2
-            ha_close = (df[['Open','High','Low','Close']].sum(axis=1)) / 4
-            if not pd.isna(ha_close.iloc[-1]) and not pd.isna(ha_open.iloc[-1]):
-                if ha_close.iloc[-1] > ha_open.iloc[-1]: 
-                    bull += 1
-                    signals['HA'] = "▲"
-                elif ha_close.iloc[-1] < ha_open.iloc[-1]: 
-                    bear += 1
-                    signals['HA'] = "▼"
-                else:
-                    signals['HA'] = "—"
-            else:
-                signals['HA'] = "—"
-        except:
-            signals['HA'] = "—"
-
-        # SHA (Smoothed Heikin Ashi)
-        try:
-            sha = df['Close'].ewm(span=10).mean()
-            sha_open = df['Open'].ewm(span=10).mean()
-            if not pd.isna(sha.iloc[-1]) and not pd.isna(sha_open.iloc[-1]):
-                if sha.iloc[-1] > sha_open.iloc[-1]: 
-                    bull += 1
-                    signals['SHA'] = "▲"
-                elif sha.iloc[-1] < sha_open.iloc[-1]: 
-                    bear += 1
-                    signals['SHA'] = "▼"
-                else:
-                    signals['SHA'] = "—"
-            else:
-                signals['SHA'] = "—"
-        except:
-            signals['SHA'] = "—"
-
-        # Ichimoku simplifié
-        try:
-            tenkan = (df['High'].rolling(9).max() + df['Low'].rolling(9).min()) / 2
-            kijun = (df['High'].rolling(26).max() + df['Low'].rolling(26).min()) / 2
-            senkou_a = (tenkan + kijun) / 2
-            senkou_b = (df['High'].rolling(52).max() + df['Low'].rolling(52).min()) / 2
-            price = df['Close'].iloc[-1]
+            signals['Momentum'] = "—"
+        
+        # 4. High/Low position
+        high_20 = df['High'].rolling(20).max()
+        low_20 = df['Low'].rolling(20).min()
+        
+        if not pd.isna(high_20.iloc[-1]) and not pd.isna(low_20.iloc[-1]):
+            range_20 = high_20.iloc[-1] - low_20.iloc[-1]
+            position = (current_price - low_20.iloc[-1]) / range_20 if range_20 > 0 else 0.5
             
-            if (not pd.isna(senkou_a.iloc[-1]) and not pd.isna(senkou_b.iloc[-1]) and 
-                not pd.isna(price)):
-                cloud_top = max(senkou_a.iloc[-1], senkou_b.iloc[-1])
-                cloud_bottom = min(senkou_a.iloc[-1], senkou_b.iloc[-1])
-                
-                if price > cloud_top: 
-                    bull += 1
-                    signals['Ichimoku'] = "▲"
-                elif price < cloud_bottom: 
-                    bear += 1
-                    signals['Ichimoku'] = "▼"
-                else: 
-                    signals['Ichimoku'] = "—"
+            if position > 0.7:
+                bull += 1
+                signals['Position'] = "▲"
+            elif position < 0.3:
+                bear += 1
+                signals['Position'] = "▼"
             else:
-                signals['Ichimoku'] = "—"
-        except:
-            signals['Ichimoku'] = "—"
-
+                signals['Position'] = "—"
+        else:
+            signals['Position'] = "—"
+        
         confluence = max(bull, bear)
         direction = "HAUSSIER" if bull > bear else "BAISSIER" if bear > bull else "NEUTRE"
-        stars = confluence_stars(confluence)
-
-        return {"confluence": confluence, "direction": direction, "stars": stars, "signals": signals}
+        
+        # Système d'étoiles simplifié
+        stars_map = {4: "⭐⭐⭐⭐", 3: "⭐⭐⭐", 2: "⭐⭐", 1: "⭐"}
+        stars = stars_map.get(confluence, "WAIT")
+        
+        return {
+            "confluence": confluence, 
+            "direction": direction, 
+            "stars": stars, 
+            "signals": signals,
+            "price": f"{current_price:.4f}"
+        }
         
     except Exception as e:
-        st.error(f"Erreur dans le calcul des signaux: {e}")
+        st.error(f"💥 Erreur calcul signaux: {e}")
         return None
 
 # --- INTERFACE UTILISATEUR ---
-st.title("📈 Forex Scanner")
+st.title("📈 Forex Scanner (Mode Debug)")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 3])
 
 with col1:
     st.header("⚙️ Paramètres")
-    min_conf = st.slider("Confluence minimale", 0, 6, 3)
-    show_all = st.checkbox("Afficher toutes les paires", value=False)
+    min_conf = st.slider("Confluence minimale", 0, 4, 1)  # Réduit à 4 max
+    show_all = st.checkbox("Afficher toutes les paires", value=True)  # Par défaut True
+    debug_mode = st.checkbox("Mode debug détaillé", value=True)
     
     scan_button = st.button("🚀 Lancer le scan", type="primary")
 
@@ -257,102 +220,109 @@ with col2:
     if scan_button and API_KEY:
         st.header("📊 Résultats du scan")
         
-        # Progress bar
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        if debug_mode:
+            st.info("🔧 Mode debug activé - vous verrez tous les détails du processus")
         
         results = []
+        errors = []
         
         for i, symbol in enumerate(FOREX_PAIRS_TD):
-            progress = (i + 1) / len(FOREX_PAIRS_TD)
-            progress_bar.progress(progress)
-            status_text.text(f"Analyse de {symbol} ({i+1}/{len(FOREX_PAIRS_TD)})")
+            st.markdown(f"### 🔍 Analyse de {symbol} ({i+1}/{len(FOREX_PAIRS_TD)})")
             
-            df = get_data(symbol, API_KEY)
-            
-            if df is not None:
-                res = calculate_signals(df)
-                if res:
-                    if show_all or res['confluence'] >= min_conf:
-                        color = ('green' if res['direction'] == 'HAUSSIER' 
-                               else 'red' if res['direction'] == 'BAISSIER' 
-                               else 'gray')
+            with st.expander(f"Détails pour {symbol}", expanded=debug_mode):
+                df = get_data(symbol, API_KEY)
+                
+                if df is not None:
+                    st.success(f"✅ Données récupérées pour {symbol}")
+                    
+                    res = calculate_simple_signals(df)
+                    if res:
+                        st.write(f"🎯 Signaux calculés: {res}")
                         
-                        row = {
-                            "Paire": symbol.replace("/", ""),
-                            "Confluences": res['stars'],
-                            "Direction": f"<span style='color:{color}'>{res['direction']}</span>",
-                        }
-                        row.update(res['signals'])
-                        results.append(row)
+                        if show_all or res['confluence'] >= min_conf:
+                            color = ('green' if res['direction'] == 'HAUSSIER' 
+                                   else 'red' if res['direction'] == 'BAISSIER' 
+                                   else 'gray')
+                            
+                            row = {
+                                "Paire": symbol.replace("/", ""),
+                                "Prix": res['price'],
+                                "Confluences": res['stars'],
+                                "Direction": f"<span style='color:{color}'>{res['direction']}</span>",
+                            }
+                            row.update(res['signals'])
+                            results.append(row)
+                            st.success(f"✅ {symbol} ajouté aux résultats")
+                        else:
+                            st.info(f"ℹ️ {symbol} filtré (confluence {res['confluence']} < {min_conf})")
+                    else:
+                        st.error(f"❌ Échec calcul signaux pour {symbol}")
+                        errors.append(f"{symbol}: Échec calcul signaux")
+                else:
+                    st.error(f"❌ Pas de données pour {symbol}")
+                    errors.append(f"{symbol}: Pas de données")
             
             # Délai pour éviter de surcharger l'API
-            time.sleep(0.5)
+            if i < len(FOREX_PAIRS_TD) - 1:  # Pas de délai après le dernier
+                time.sleep(2)  # Augmenté à 2 secondes
         
-        progress_bar.empty()
-        status_text.empty()
+        # Résultats finaux
+        st.markdown("---")
+        st.markdown("## 📋 Résumé final")
         
         if results:
+            st.success(f"✅ {len(results)} opportunités trouvées sur {len(FOREX_PAIRS_TD)} paires analysées")
+            
             df_res = pd.DataFrame(results)
-            # Tri par nombre d'étoiles (plus complexe car ce sont des strings)
             df_res['sort_key'] = df_res['Confluences'].apply(lambda x: x.count('⭐'))
             df_res = df_res.sort_values(by="sort_key", ascending=False).drop('sort_key', axis=1)
             
             st.markdown("### 🎯 Opportunités détectées")
             st.markdown(df_res.to_html(escape=False, index=False), unsafe_allow_html=True)
             
-            # Bouton de téléchargement
-            csv_data = df_res.copy()
-            csv_data['Direction'] = csv_data['Direction'].str.replace('<[^<]+?>', '', regex=True)
-            
-            st.download_button(
-                "📂 Exporter en CSV", 
-                data=csv_data.to_csv(index=False).encode('utf-8'), 
-                file_name=f"forex_confluences_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", 
-                mime="text/csv"
-            )
-            
-            # Statistiques
-            st.markdown("### 📈 Statistiques")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Pairs analysées", len(FOREX_PAIRS_TD))
-            with col2:
-                st.metric("Opportunités trouvées", len(results))
-            with col3:
-                haussier = sum(1 for r in results if 'HAUSSIER' in r['Direction'])
-                st.metric("Signaux haussiers", haussier)
-                
         else:
-            st.warning("⚠️ Aucun résultat correspondant aux critères.")
-            st.info("💡 Essayez de réduire la confluence minimale ou d'activer 'Afficher toutes les paires'")
+            st.warning("⚠️ Aucun résultat trouvé")
+            st.info("💡 Vérifiez votre clé API ou réduisez la confluence minimale")
+        
+        if errors:
+            st.markdown("### ❌ Erreurs rencontrées")
+            for error in errors:
+                st.text(f"• {error}")
 
 # Footer
 st.markdown("---")
-col1, col2 = st.columns([2, 1])
-with col1:
-    st.caption(f"🕒 Dernière mise à jour : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-with col2:
-    st.caption("💡 Données fournies par Twelve Data")
+st.caption(f"🕒 Dernière mise à jour : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
-# Aide
-with st.expander("ℹ️ Aide et informations"):
+# Guide de diagnostic
+with st.expander("🔧 Guide de diagnostic"):
     st.markdown("""
-    **Comment utiliser ce scanner :**
-    1. Entrez votre clé API Twelve Data (gratuite sur twelvedata.com)
-    2. Ajustez la confluence minimale (nombre d'indicateurs en accord)
-    3. Lancez le scan pour analyser toutes les paires
+    **Si aucun résultat n'apparaît :**
     
-    **Indicateurs utilisés :**
-    - **HMA** : Hull Moving Average (approximation)
-    - **RSI** : Relative Strength Index
-    - **ADX** : Average Directional Index  
-    - **HA** : Heikin Ashi
-    - **SHA** : Smoothed Heikin Ashi
-    - **Ichimoku** : Nuage d'Ichimoku (simplifié)
+    1. **Clé API invalide** : Vérifiez votre clé sur twelvedata.com
+    2. **Limites API atteintes** : Attendez ou upgradez votre plan
+    3. **Symboles invalides** : Certains symboles peuvent ne pas être disponibles
+    4. **Confluence trop élevée** : Réduisez la confluence minimale à 1
+    5. **Données insuffisantes** : Certaines paires peuvent manquer de données historiques
     
-    **Symboles :**
-    - ▲ : Signal haussier
-    - ▼ : Signal baissier  
-    - — : Signal neutre
+    **En mode debug, vous devriez voir :**
+    - Les requêtes API pour chaque paire
+    - Le status code de chaque réponse
+    - Le nombre de lignes de données reçues
+    - Les erreurs spécifiques
+    
+    **API Twelve Data - Plans gratuits :**
+    - 800 appels par jour
+    - 8 appels par minute
+    - Données différées
     """)
+
+# Test rapide de l'API
+if st.button("🧪 Test rapide API"):
+    st.write("Test de connexion avec EUR/USD...")
+    test_result = get_data("EUR/USD", API_KEY)
+    if test_result is not None:
+        st.success("✅ API fonctionne !")
+        st.write(f"Exemple de données reçues: {len(test_result)} lignes")
+        st.write(test_result.head())
+    else:
+        st.error("❌ Problème avec l'API")
