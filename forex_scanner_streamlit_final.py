@@ -8,321 +8,289 @@ import requests
 # --- CONFIG ---
 st.set_page_config(page_title="Forex Scanner", page_icon="📈", layout="wide")
 
-# --- CONFIG API TWELVE DATA ---
-TWELVE_DATA_API_URL = "https://api.twelvedata.com/time_series"
-INTERVAL = "1h"
-OUTPUT_SIZE = 50  # Réduit pour éviter les limites API
+# --- VERSION ULTRA-SIMPLIFIEE POUR DEBUG ---
+st.title("📈 Forex Scanner - Version Debug")
+st.markdown("---")
 
-# --- INTERFACE POUR CLE API ---
-st.sidebar.header("🔑 Configuration API")
-API_KEY = st.sidebar.text_input("Clé API Twelve Data", type="password", help="Entrez votre clé API Twelve Data")
+# Variables globales pour le debug
+debug_info = []
 
-if not API_KEY:
-    st.warning("⚠️ Veuillez entrer votre clé API Twelve Data dans la barre latérale pour commencer.")
-    st.info("💡 Vous pouvez obtenir une clé API gratuite sur https://twelvedata.com/")
-    st.stop()
+def add_debug(message):
+    debug_info.append(f"{datetime.now().strftime('%H:%M:%S')} - {message}")
+    st.write(f"🔍 {message}")
 
-# --- FETCH DATA ---
-def get_data(symbol, api_key):
-    """Récupère les données avec diagnostic détaillé"""
+# Test avec API gratuite alternative (exchangerate-api.com)
+def test_free_api():
+    """Test avec une API gratuite simple"""
+    add_debug("Test avec API gratuite exchangerate-api.com")
     try:
+        url = "https://api.exchangerate-api.com/v4/latest/USD"
+        response = requests.get(url, timeout=10)
+        add_debug(f"Status code: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            add_debug(f"Données reçues: {list(data.keys())}")
+            return data
+        else:
+            add_debug(f"Erreur HTTP: {response.status_code}")
+            return None
+    except Exception as e:
+        add_debug(f"Erreur: {e}")
+        return None
+
+# Test avec Twelve Data
+def test_twelve_data(api_key):
+    """Test spécifique Twelve Data"""
+    add_debug("Test avec Twelve Data API")
+    
+    if not api_key:
+        add_debug("❌ Pas de clé API fournie")
+        return None
+    
+    try:
+        # Test avec un symbole simple
+        url = "https://api.twelvedata.com/time_series"
         params = {
-            "symbol": symbol,
-            "interval": INTERVAL,
-            "outputsize": OUTPUT_SIZE,
-            "apikey": api_key,
-            "timezone": "UTC"
+            "symbol": "EURUSD",  # Sans slash
+            "interval": "1day",   # Intervalle jour au lieu d'heure
+            "outputsize": "10",   # Très peu de données
+            "apikey": api_key
         }
         
-        st.write(f"🔍 Requête pour {symbol}...")
-        r = requests.get(TWELVE_DATA_API_URL, params=params, timeout=15)
+        add_debug(f"URL: {url}")
+        add_debug(f"Paramètres: {params}")
         
-        st.write(f"📡 Status: {r.status_code}")
+        response = requests.get(url, params=params, timeout=15)
+        add_debug(f"Status code: {response.status_code}")
         
-        if r.status_code != 200:
-            st.error(f"❌ Erreur HTTP {r.status_code} pour {symbol}")
+        if response.status_code == 200:
+            data = response.json()
+            add_debug(f"Clés de réponse: {list(data.keys())}")
+            
+            # Diagnostic détaillé
+            if "status" in data:
+                add_debug(f"Status API: {data['status']}")
+            if "message" in data:
+                add_debug(f"Message API: {data['message']}")
+            if "note" in data:
+                add_debug(f"Note API: {data['note']}")
+            if "values" in data:
+                add_debug(f"Nombre de valeurs: {len(data['values']) if data['values'] else 0}")
+                if data['values']:
+                    add_debug(f"Première valeur: {data['values'][0]}")
+            
+            return data
+        else:
+            add_debug(f"❌ Erreur HTTP: {response.status_code}")
+            add_debug(f"Réponse: {response.text[:200]}")
             return None
             
-        j = r.json()
-        st.write(f"📋 Réponse API: {list(j.keys())}")
-        
-        # Diagnostics détaillés
-        if "status" in j and j["status"] == "error":
-            st.error(f"❌ Erreur API pour {symbol}: {j.get('message', 'Erreur inconnue')}")
-            return None
-            
-        if "code" in j and j["code"] != 200:
-            st.error(f"❌ Code erreur {j['code']} pour {symbol}: {j.get('message', 'Erreur inconnue')}")
-            return None
-            
-        if "values" not in j:
-            st.warning(f"⚠️ Pas de données 'values' pour {symbol}. Clés disponibles: {list(j.keys())}")
-            if "note" in j:
-                st.info(f"ℹ️ Note API: {j['note']}")
-            return None
-            
-        if not j["values"] or len(j["values"]) == 0:
-            st.warning(f"⚠️ Données vides pour {symbol}")
-            return None
-            
-        df = pd.DataFrame(j["values"])
-        st.write(f"📊 Données reçues: {len(df)} lignes, colonnes: {list(df.columns)}")
-        
-        # Vérification des colonnes essentielles
-        required_cols = ['datetime', 'open', 'high', 'low', 'close']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            st.error(f"❌ Colonnes manquantes pour {symbol}: {missing_cols}")
-            return None
-        
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        df.set_index('datetime', inplace=True)
-        df = df.sort_index()
-        
-        # Conversion en float avec diagnostic
-        for col in ['open', 'high', 'low', 'close']:
-            original_type = df[col].dtype
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            null_count = df[col].isnull().sum()
-            if null_count > 0:
-                st.warning(f"⚠️ {null_count} valeurs nulles dans {col} pour {symbol}")
-            
-        df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close"}, inplace=True)
-        
-        # Vérification finale
-        clean_df = df[['Open','High','Low','Close']].dropna()
-        st.write(f"✅ Données nettoyées: {len(clean_df)} lignes valides")
-        
-        if len(clean_df) < 30:
-            st.warning(f"⚠️ Pas assez de données pour {symbol} ({len(clean_df)} lignes)")
-            return None
-            
-        return clean_df
-        
-    except requests.exceptions.Timeout:
-        st.error(f"⏱️ Timeout pour {symbol}")
-        return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"🌐 Erreur réseau pour {symbol}: {e}")
-        return None
     except Exception as e:
-        st.error(f"💥 Erreur inattendue pour {symbol}: {e}")
+        add_debug(f"❌ Exception: {e}")
         return None
 
-# --- PAIRS SIMPLIFIEES POUR TEST ---
-FOREX_PAIRS_TD = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD"
-]
+# Générateur de données fictives pour test
+def generate_fake_data():
+    """Génère des données fictives pour tester la logique"""
+    add_debug("Génération de données fictives")
+    
+    dates = pd.date_range(start='2024-01-01', periods=50, freq='D')
+    np.random.seed(42)  # Pour des résultats reproductibles
+    
+    # Simulation d'un prix qui évolue
+    base_price = 1.1000
+    price_changes = np.random.normal(0, 0.002, 50).cumsum()
+    closes = base_price + price_changes
+    
+    # OHLC cohérent
+    opens = np.roll(closes, 1)
+    opens[0] = base_price
+    
+    highs = closes + np.random.uniform(0, 0.003, 50)
+    lows = closes - np.random.uniform(0, 0.003, 50)
+    
+    df = pd.DataFrame({
+        'Open': opens,
+        'High': highs,
+        'Low': lows,
+        'Close': closes
+    }, index=dates)
+    
+    add_debug(f"Données fictives générées: {len(df)} lignes")
+    return df
 
-# --- INDICATEURS SIMPLIFIES ---
 def calculate_simple_signals(df):
-    """Version simplifiée des signaux pour debug"""
-    if df is None or len(df) < 20:
+    """Calcul de signaux très simples"""
+    if df is None or len(df) == 0:
+        add_debug("❌ Pas de données pour calculer les signaux")
         return None
-        
+    
+    add_debug(f"Calcul des signaux sur {len(df)} lignes")
+    
     try:
         signals = {}
         bull = bear = 0
         
-        # 1. Simple Moving Average
-        sma_short = df['Close'].rolling(5).mean()
-        sma_long = df['Close'].rolling(10).mean()
-        
-        if len(sma_short) >= 2 and len(sma_long) >= 2:
-            if sma_short.iloc[-1] > sma_long.iloc[-1]:
+        # 1. Tendance simple (prix actuel vs prix d'il y a 5 jours)
+        if len(df) >= 6:
+            current = df['Close'].iloc[-1]
+            past = df['Close'].iloc[-6]
+            if current > past:
                 bull += 1
-                signals['SMA'] = "▲"
+                signals['Trend_5d'] = "▲"
+                add_debug(f"Tendance 5j: Haussière ({current:.4f} > {past:.4f})")
             else:
                 bear += 1
-                signals['SMA'] = "▼"
-        else:
-            signals['SMA'] = "—"
+                signals['Trend_5d'] = "▼"
+                add_debug(f"Tendance 5j: Baissière ({current:.4f} < {past:.4f})")
         
-        # 2. Price vs Moving Average
-        sma_20 = df['Close'].rolling(20).mean()
-        current_price = df['Close'].iloc[-1]
-        
-        if not pd.isna(sma_20.iloc[-1]):
-            if current_price > sma_20.iloc[-1]:
+        # 2. Moyenne mobile simple
+        if len(df) >= 10:
+            ma_10 = df['Close'].rolling(10).mean().iloc[-1]
+            current = df['Close'].iloc[-1]
+            if current > ma_10:
                 bull += 1
-                signals['Price_vs_MA'] = "▲"
+                signals['MA_10'] = "▲"
+                add_debug(f"Prix vs MA10: Haussier ({current:.4f} > {ma_10:.4f})")
             else:
                 bear += 1
-                signals['Price_vs_MA'] = "▼"
-        else:
-            signals['Price_vs_MA'] = "—"
+                signals['MA_10'] = "▼"
+                add_debug(f"Prix vs MA10: Baissier ({current:.4f} < {ma_10:.4f})")
         
-        # 3. Volume (si disponible) ou momentum simple
-        if len(df) >= 3:
-            momentum = df['Close'].iloc[-1] - df['Close'].iloc[-3]
-            if momentum > 0:
-                bull += 1
-                signals['Momentum'] = "▲"
-            else:
-                bear += 1
-                signals['Momentum'] = "▼"
-        else:
-            signals['Momentum'] = "—"
-        
-        # 4. High/Low position
-        high_20 = df['High'].rolling(20).max()
-        low_20 = df['Low'].rolling(20).min()
-        
-        if not pd.isna(high_20.iloc[-1]) and not pd.isna(low_20.iloc[-1]):
-            range_20 = high_20.iloc[-1] - low_20.iloc[-1]
-            position = (current_price - low_20.iloc[-1]) / range_20 if range_20 > 0 else 0.5
+        # 3. Volatilité (range des 5 derniers jours)
+        if len(df) >= 5:
+            recent_high = df['High'].tail(5).max()
+            recent_low = df['Low'].tail(5).min()
+            current = df['Close'].iloc[-1]
+            position = (current - recent_low) / (recent_high - recent_low) if recent_high > recent_low else 0.5
             
             if position > 0.7:
                 bull += 1
                 signals['Position'] = "▲"
+                add_debug(f"Position dans range: Haute ({position:.2f})")
             elif position < 0.3:
                 bear += 1
                 signals['Position'] = "▼"
+                add_debug(f"Position dans range: Basse ({position:.2f})")
             else:
                 signals['Position'] = "—"
-        else:
-            signals['Position'] = "—"
+                add_debug(f"Position dans range: Neutre ({position:.2f})")
         
         confluence = max(bull, bear)
         direction = "HAUSSIER" if bull > bear else "BAISSIER" if bear > bull else "NEUTRE"
         
-        # Système d'étoiles simplifié
-        stars_map = {4: "⭐⭐⭐⭐", 3: "⭐⭐⭐", 2: "⭐⭐", 1: "⭐"}
+        stars_map = {3: "⭐⭐⭐", 2: "⭐⭐", 1: "⭐", 0: "WAIT"}
         stars = stars_map.get(confluence, "WAIT")
         
-        return {
-            "confluence": confluence, 
-            "direction": direction, 
-            "stars": stars, 
+        result = {
+            "confluence": confluence,
+            "direction": direction,
+            "stars": stars,
             "signals": signals,
-            "price": f"{current_price:.4f}"
+            "price": f"{df['Close'].iloc[-1]:.4f}",
+            "bull_count": bull,
+            "bear_count": bear
         }
         
+        add_debug(f"Signaux calculés: {bull} haussiers, {bear} baissiers")
+        return result
+        
     except Exception as e:
-        st.error(f"💥 Erreur calcul signaux: {e}")
+        add_debug(f"❌ Erreur calcul signaux: {e}")
         return None
 
-# --- INTERFACE UTILISATEUR ---
-st.title("📈 Forex Scanner (Mode Debug)")
-st.markdown("---")
-
-col1, col2 = st.columns([1, 3])
+# Interface utilisateur
+col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.header("⚙️ Paramètres")
-    min_conf = st.slider("Confluence minimale", 0, 4, 1)  # Réduit à 4 max
-    show_all = st.checkbox("Afficher toutes les paires", value=True)  # Par défaut True
-    debug_mode = st.checkbox("Mode debug détaillé", value=True)
+    st.header("🔧 Tests de Diagnostic")
     
-    scan_button = st.button("🚀 Lancer le scan", type="primary")
+    # Test API gratuite
+    if st.button("🧪 Test API Gratuite"):
+        debug_info.clear()
+        st.markdown("### Test avec API gratuite")
+        result = test_free_api()
+        if result:
+            st.success("✅ API gratuite fonctionne!")
+            st.json(result)
+        
+    # Test Twelve Data
+    api_key = st.text_input("Clé API Twelve Data", type="password")
+    if st.button("🧪 Test Twelve Data") and api_key:
+        debug_info.clear()
+        st.markdown("### Test Twelve Data")
+        result = test_twelve_data(api_key)
+        if result:
+            st.json(result)
+    
+    # Test avec données fictives
+    if st.button("🧪 Test Logique (Données Fictives)"):
+        debug_info.clear()
+        st.markdown("### Test avec données fictives")
+        fake_data = generate_fake_data()
+        signals = calculate_simple_signals(fake_data)
+        
+        if signals:
+            st.success("✅ Logique de calcul fonctionne!")
+            st.json(signals)
+            
+            # Affichage des données
+            st.line_chart(fake_data['Close'])
+        else:
+            st.error("❌ Problème dans la logique")
 
 with col2:
-    if scan_button and API_KEY:
-        st.header("📊 Résultats du scan")
-        
-        if debug_mode:
-            st.info("🔧 Mode debug activé - vous verrez tous les détails du processus")
-        
-        results = []
-        errors = []
-        
-        for i, symbol in enumerate(FOREX_PAIRS_TD):
-            st.markdown(f"### 🔍 Analyse de {symbol} ({i+1}/{len(FOREX_PAIRS_TD)})")
-            
-            with st.expander(f"Détails pour {symbol}", expanded=debug_mode):
-                df = get_data(symbol, API_KEY)
-                
-                if df is not None:
-                    st.success(f"✅ Données récupérées pour {symbol}")
-                    
-                    res = calculate_simple_signals(df)
-                    if res:
-                        st.write(f"🎯 Signaux calculés: {res}")
-                        
-                        if show_all or res['confluence'] >= min_conf:
-                            color = ('green' if res['direction'] == 'HAUSSIER' 
-                                   else 'red' if res['direction'] == 'BAISSIER' 
-                                   else 'gray')
-                            
-                            row = {
-                                "Paire": symbol.replace("/", ""),
-                                "Prix": res['price'],
-                                "Confluences": res['stars'],
-                                "Direction": f"<span style='color:{color}'>{res['direction']}</span>",
-                            }
-                            row.update(res['signals'])
-                            results.append(row)
-                            st.success(f"✅ {symbol} ajouté aux résultats")
-                        else:
-                            st.info(f"ℹ️ {symbol} filtré (confluence {res['confluence']} < {min_conf})")
-                    else:
-                        st.error(f"❌ Échec calcul signaux pour {symbol}")
-                        errors.append(f"{symbol}: Échec calcul signaux")
-                else:
-                    st.error(f"❌ Pas de données pour {symbol}")
-                    errors.append(f"{symbol}: Pas de données")
-            
-            # Délai pour éviter de surcharger l'API
-            if i < len(FOREX_PAIRS_TD) - 1:  # Pas de délai après le dernier
-                time.sleep(2)  # Augmenté à 2 secondes
-        
-        # Résultats finaux
-        st.markdown("---")
-        st.markdown("## 📋 Résumé final")
-        
-        if results:
-            st.success(f"✅ {len(results)} opportunités trouvées sur {len(FOREX_PAIRS_TD)} paires analysées")
-            
-            df_res = pd.DataFrame(results)
-            df_res['sort_key'] = df_res['Confluences'].apply(lambda x: x.count('⭐'))
-            df_res = df_res.sort_values(by="sort_key", ascending=False).drop('sort_key', axis=1)
-            
-            st.markdown("### 🎯 Opportunités détectées")
-            st.markdown(df_res.to_html(escape=False, index=False), unsafe_allow_html=True)
-            
-        else:
-            st.warning("⚠️ Aucun résultat trouvé")
-            st.info("💡 Vérifiez votre clé API ou réduisez la confluence minimale")
-        
-        if errors:
-            st.markdown("### ❌ Erreurs rencontrées")
-            for error in errors:
-                st.text(f"• {error}")
+    st.header("📋 Log de Debug")
+    
+    if debug_info:
+        for info in debug_info:
+            st.text(info)
+    else:
+        st.info("Cliquez sur un bouton de test pour voir les logs")
 
-# Footer
+# Section d'aide
 st.markdown("---")
-st.caption(f"🕒 Dernière mise à jour : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-
-# Guide de diagnostic
-with st.expander("🔧 Guide de diagnostic"):
+with st.expander("🆘 Guide de Diagnostic"):
     st.markdown("""
-    **Si aucun résultat n'apparaît :**
+    **Étapes de diagnostic :**
     
-    1. **Clé API invalide** : Vérifiez votre clé sur twelvedata.com
-    2. **Limites API atteintes** : Attendez ou upgradez votre plan
-    3. **Symboles invalides** : Certains symboles peuvent ne pas être disponibles
-    4. **Confluence trop élevée** : Réduisez la confluence minimale à 1
-    5. **Données insuffisantes** : Certaines paires peuvent manquer de données historiques
+    1. **Test API Gratuite** : Vérifie que votre connexion internet fonctionne
+    2. **Test Twelve Data** : Vérifie spécifiquement votre clé API
+    3. **Test Logique** : Vérifie que le calcul des signaux fonctionne
     
-    **En mode debug, vous devriez voir :**
-    - Les requêtes API pour chaque paire
-    - Le status code de chaque réponse
-    - Le nombre de lignes de données reçues
-    - Les erreurs spécifiques
+    **Problèmes courants :**
+    - **Clé API invalide** : Vérifiez sur twelvedata.com
+    - **Quota dépassé** : Plan gratuit = 800 appels/jour
+    - **Symboles incorrects** : Essayez "EURUSD" au lieu de "EUR/USD"
+    - **Interval non supporté** : Essayez "1day" au lieu de "1h"
     
-    **API Twelve Data - Plans gratuits :**
-    - 800 appels par jour
-    - 8 appels par minute
-    - Données différées
+    **Messages d'erreur typiques :**
+    - `"status": "error"` : Problème avec la requête
+    - `"note": "Thank you..."` : Limite de quota atteinte
+    - `HTTP 429` : Trop de requêtes par minute
+    - `HTTP 401` : Clé API invalide
     """)
 
-# Test rapide de l'API
-if st.button("🧪 Test rapide API"):
-    st.write("Test de connexion avec EUR/USD...")
-    test_result = get_data("EUR/USD", API_KEY)
-    if test_result is not None:
-        st.success("✅ API fonctionne !")
-        st.write(f"Exemple de données reçues: {len(test_result)} lignes")
-        st.write(test_result.head())
-    else:
-        st.error("❌ Problème avec l'API")
+# Test automatique au lancement
+if 'auto_test_done' not in st.session_state:
+    st.session_state.auto_test_done = True
+    st.info("🚀 Lancement du test automatique...")
+    
+    # Test de connectivité basique
+    debug_info.clear()
+    add_debug("Test automatique de connectivité")
+    
+    try:
+        response = requests.get("https://httpbin.org/get", timeout=5)
+        if response.status_code == 200:
+            add_debug("✅ Connexion internet OK")
+        else:
+            add_debug("❌ Problème de connexion")
+    except:
+        add_debug("❌ Pas de connexion internet")
+    
+    # Affichage des infos système
+    add_debug(f"Streamlit version: {st.__version__}")
+    add_debug(f"Pandas version: {pd.__version__}")
+    add_debug("Test automatique terminé")
